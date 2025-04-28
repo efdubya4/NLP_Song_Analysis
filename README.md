@@ -1,1 +1,13 @@
-# NLP_Projects
+# NLP_Projectsset
+
+setup your .env like this:
+
+DB_HOST=localhost
+DB_USER=your_user
+DB_PASSWORD=your_password
+DB_NAME=hit_scan
+SPOTIFY_CLIENT_ID=your_spotify_id
+SPOTIFY_CLIENT_SECRET=your_spotify_secret
+GENIUS_ACCESS_TOKEN=your_genius_token
+GEMINIUS_CLIENT_ID=your_genius_client_id
+GENIUS_CLIENT_SECRET=your_genius_client_secret
