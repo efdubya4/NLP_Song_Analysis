@@ -1,5 +1,5 @@
 import os
-import mysql.connector
+import psycopg2
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import lyricsgenius
@@ -13,11 +13,11 @@ load_dotenv()
 
 # Connect to database
 def connect_to_db():
-    conn = mysql.connector.connect(
+    conn = psycopg2.connect(
         host=os.getenv('DB_HOST', 'localhost'),
-        user=os.getenv('DB_USER', 'root'),
+        user=os.getenv('DB_USER', 'postgres'),
         password=os.getenv('DB_PASSWORD', ''),
-        database=os.getenv('DB_NAME', 'viral_verse')
+        database=os.getenv('DB_NAME', 'hits_scan')
     )
     return conn, conn.cursor()
 
@@ -103,6 +103,7 @@ def insert_artist(cursor, artist_data):
     query = """
     INSERT INTO artists (name, spotify_id, popularity, followers, image_url)
     VALUES (%s, %s, %s, %s, %s)
+    RETURNING artist_id
     """
     cursor.execute(query, (
         artist_data['name'],
@@ -111,11 +112,15 @@ def insert_artist(cursor, artist_data):
         artist_data['followers'],
         artist_data['image_url']
     ))
-    return cursor.lastrowid
+    return cursor.fetchone()[0]
 
 def insert_artist_genre(cursor, artist_id, genre_id):
     """Link artist with genre"""
-    query = "INSERT IGNORE INTO artist_genres (artist_id, genre_id) VALUES (%s, %s)"
+    query = """
+    INSERT INTO artist_genres (artist_id, genre_id) 
+    VALUES (%s, %s)
+    ON CONFLICT (artist_id, genre_id) DO NOTHING
+    """
     cursor.execute(query, (artist_id, genre_id))
 
 def insert_song(cursor, song_data):
@@ -135,6 +140,7 @@ def insert_song(cursor, song_data):
         release_date, duration_ms, popularity, explicit, lyrics
     )
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    RETURNING song_id
     """
     cursor.execute(query, (
         song_data['title'],
@@ -147,7 +153,7 @@ def insert_song(cursor, song_data):
         song_data['explicit'],
         song_data['lyrics']
     ))
-    return cursor.lastrowid
+    return cursor.fetchone()[0]
 
 def insert_audio_features(cursor, song_id, features):
     """Insert audio features for a song"""
@@ -158,6 +164,19 @@ def insert_audio_features(cursor, song_id, features):
         valence, tempo, time_signature
     )
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (song_id) DO UPDATE SET
+        danceability = EXCLUDED.danceability,
+        energy = EXCLUDED.energy,
+        key_value = EXCLUDED.key_value,
+        loudness = EXCLUDED.loudness,
+        mode = EXCLUDED.mode,
+        speechiness = EXCLUDED.speechiness,
+        acousticness = EXCLUDED.acousticness,
+        instrumentalness = EXCLUDED.instrumentalness,
+        liveness = EXCLUDED.liveness,
+        valence = EXCLUDED.valence,
+        tempo = EXCLUDED.tempo,
+        time_signature = EXCLUDED.time_signature
     """
     cursor.execute(query, (
         song_id,
@@ -253,25 +272,6 @@ def populate_database():
                     'genre_id': genre_id,
                     'spotify_id': track_detail['id'],
                     'release_date': track_detail['album']['release_date'],
-                    'duration_ms': track_detail['duration_ms'],
-                    'popularity': track_detail['popularity'],
-                    'explicit': track_detail['explicit'],
-                    'lyrics': lyrics
-                }
-                song_id = insert_song(cursor, song_data)
-                
-                # Insert audio features
-                insert_audio_features(cursor, song_id, audio_features)
-                
-                # Commit each song to avoid losing progress on errors
-                conn.commit()
-                
-            except Exception as e:
-                print(f"Error processing track {track['name']}: {e}")
-                conn.rollback()
-    
-    conn.commit()
-    cursor.close()
     conn.close()
     print("Database population complete!")
 
