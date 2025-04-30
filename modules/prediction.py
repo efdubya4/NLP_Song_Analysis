@@ -20,15 +20,24 @@ class HitPredictor:
     
     def train_model(self, X, y, test_size=0.2, random_state=42):
         """Train and evaluate the prediction model"""
-        # Convert to numpy if needed
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-        if isinstance(y, pd.Series):
-            y = y.values
+         # Convert categorical columns to numerical if needed
+        categorical_cols = X.select_dtypes(include=['object']).columns
+        numerical_cols = X.select_dtypes(exclude=['object']).columns
+        
+        # Option 1: One-hot encode categorical columns
+        from sklearn.preprocessing import OneHotEncoder
+        encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+        X_categorical = encoder.fit_transform(X[categorical_cols])
+        
+        # Scale numerical columns
+        X_numerical = self.scaler.fit_transform(X[numerical_cols])
+        
+        # Combine features
+        X_processed = np.concatenate([X_numerical, X_categorical], axis=1)
         
         # Train-test split
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state
+            X_processed, y, test_size=test_size, random_state=random_state
         )
         
         # Feature scaling
@@ -85,12 +94,17 @@ class HitPredictor:
     
     def save_model(self):
         """Save model and scaler to disk"""
-        with open(self.model_path, 'wb') as f:
-            pickle.dump({
-                'model': self.model,
-                'scaler': self.scaler,
-                'feature_importance': self.feature_importance
-            }, f)
+        try:
+            os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+            with open(self.model_path, 'wb') as f:
+                pickle.dump({
+                    'model': self.model,
+                    'scaler': self.scaler,
+                    'feature_importance': self.feature_importance
+                }, f)
+        except Exception as e:
+            print(f"Failed to save model: {str(e)}")
+            raise
     
     def load_model(self):
         """Load model and scaler from disk"""

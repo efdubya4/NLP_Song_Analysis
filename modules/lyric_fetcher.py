@@ -1,10 +1,10 @@
 import os
 import requests
 from dotenv import load_dotenv
-import time
 import re
 from bs4 import BeautifulSoup
 from typing import Optional
+import lyricsgenius
 
 load_dotenv()
 
@@ -19,6 +19,12 @@ class GeniusLyricFetcher:
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         self.timeout = 10  # seconds
+
+        self.genius = lyricsgenius.Genius(
+        os.getenv("GENIUS_ACCESS_TOKEN"),
+        verbose=False,
+        remove_section_headers=True
+        )
     
     def get_lyrics(self, song_title: str, artist_name: str) -> Optional[str]:
         """Main method to fetch lyrics with multiple fallbacks"""
@@ -44,29 +50,48 @@ class GeniusLyricFetcher:
     def _get_via_api(self, title: str, artist: str) -> Optional[str]:
         """Official Genius API method"""
         try:
-            # Search for the song
-            search_url = f"{self.base_url}/search"
-            response = self.session.get(
-                search_url,
-                params={'q': f"{title} {artist}"},
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            
-            # Parse results
-            hits = response.json().get('response', {}).get('hits', [])
-            if not hits:
+            song = self.genius.search_song(title, artist)
+            if not song:
                 return None
+
+            raw_lyrics = song.lyrics
+
+            # Step 1: Remove everything before the first actual lyric line
+            if 'Lyrics' in raw_lyrics:
+                raw_lyrics = raw_lyrics.split('Lyrics', 1)[1]
+            
+            # Step 2: Remove lines in brackets, like [Verse 1], [Chorus], etc.
+            lyrics_no_brackets = re.sub(r'\[.*?\]', '', raw_lyrics)
+
+            # Step 3: Remove any non-lyrical metadata (e.g., contributor counts, descriptions)
+            lyrics_lines = lyrics_no_brackets.splitlines()
+            clean_lyrics = [line.strip() for line in lyrics_lines if line.strip() and not re.match(r'^\d+ Contributors|Translations|Read More', line)]
+
+            return "\n".join(clean_lyrics)
+
+            # # Search for the song
+            # search_url = f"{self.base_url}/search"
+            # response = self.session.get(
+            #     search_url,
+            #     params={'q': f"{title} {artist}"},
+            #     timeout=self.timeout
+            # )
+            # response.raise_for_status()
+            
+            # # Parse results
+            # hits = response.json().get('response', {}).get('hits', [])
+            # if not hits:
+            #     return None
                 
-            # Get the first matching song
-            song_path = hits[0]['result']['api_path']
-            song_url = f"{self.base_url}{song_path}"
+            # # Get the first matching song
+            # song_path = hits[0]['result']['api_path']
+            # song_url = f"{self.base_url}{song_path}"
             
-            # Fetch lyrics
-            song_response = self.session.get(song_url, timeout=self.timeout)
-            song_response.raise_for_status()
+            # # Fetch lyrics
+            # song_response = self.session.get(song_url, timeout=self.timeout)
+            # song_response.raise_for_status()
             
-            return song_response.json().get('response', {}).get('song', {}).get('lyrics', {}).get('plain')
+            # return song_response.json().get('response', {}).get('song', {}).get('lyrics', {}).get('plain')
             
         except Exception as e:
             print(f"API method failed: {str(e)}")
@@ -75,6 +100,7 @@ class GeniusLyricFetcher:
     def _get_via_web_scraping(self, title: str, artist: str) -> Optional[str]:
         """Fallback web scraping method"""
         print("Fallback web scraping method...")
+        return None
         # # try:
         # #     # Search Genius website
         # #     search_term = f"{title} {artist}".replace(' ', '+')

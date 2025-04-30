@@ -36,7 +36,7 @@ def main():
     
     # Data Collection
     print(f"\nFetching top {TARGET_GENRE} tracks from Spotify...")
-    tracks_df = collector.get_top_tracks_by_genre(TARGET_GENRE, limit=25)
+    tracks_df = collector.get_top_tracks_by_genre(TARGET_GENRE, limit=9)
     
     if tracks_df.empty:
         print("Error: No tracks fetched from Spotify")
@@ -48,10 +48,12 @@ def main():
     # Lyric Fetching
     print("\nFetching lyrics from Genius...")
     tracks_df = collector.add_lyrics_to_dataframe(tracks_df)
+    # print(tracks_df[['title', 'artist', 'lyrics']].head())
 
     # Show success rate
     success_count = tracks_df['lyrics'].notna().sum()
     print(f"Successfully fetched lyrics for {success_count}/{len(tracks_df)} tracks")
+    # print(tracks_df.dtypes)
 
     
     # Feature Engineering
@@ -64,7 +66,7 @@ def main():
         'sentiment_compound', 'theme_love'
     ]
     X = tracks_df[features]
-    y = (tracks_df['popularity'] > 70).astype(int)  # Binary classification
+    y = (tracks_df['sentiment_compound'] > 0).astype(int)  # Binary classification
     
     # Model Training
     if TRAIN_MODEL and not X.empty:
@@ -80,7 +82,13 @@ def main():
         'valence': 0.8,
         'lyrics': "I'm feeling good tonight, gonna dance until the morning light"
     }
-    new_features = lyric_analyzer.analyze_single_song(new_song)
+    new_song_df = pd.DataFrame([new_song])
+
+    # Apply analysis
+    new_song_df = lyric_analyzer.add_analysis_features(new_song_df)
+
+    # Extract features for prediction
+    new_features = new_song_df[features].iloc[0].to_dict()
     formatted_features = format_features(new_features, features)
     prediction = predictor.predict(list(new_features.values()))
     
