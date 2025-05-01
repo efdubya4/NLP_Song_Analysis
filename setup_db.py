@@ -9,7 +9,7 @@ def setup_database():
     # Connect to PostgreSQL server
     conn = psycopg2.connect(
         host=os.getenv('DB_HOST', 'localhost'),
-        user=os.getenv('DB_USER', 'postgres'),
+        user=os.getenv('DB_USER', 'hitscanadmin'),
         password=os.getenv('DB_PASSWORD', ''),
         database='postgres'
     )
@@ -37,67 +37,7 @@ def setup_database():
     cursor = conn.cursor()
     
     # Create tables
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS genres (
-        genre_id SERIAL PRIMARY KEY,
-        name VARCHAR(50) UNIQUE NOT NULL,
-        description TEXT,
-        typical_bpm_range VARCHAR(50)
-    )
-    """)
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS artists (
-        artist_id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        spotify_id VARCHAR(50) UNIQUE,
-        popularity INTEGER,
-        followers INTEGER,
-        image_url TEXT
-    )
-    """)
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS songs (
-        song_id SERIAL PRIMARY KEY,
-        title VARCHAR(255) NOT NULL,
-        artist_id INTEGER REFERENCES artists(artist_id),
-        primary_genre_id INTEGER REFERENCES genres(genre_id),
-        spotify_id VARCHAR(50) UNIQUE,
-        release_date DATE,
-        duration_ms INTEGER,
-        popularity INTEGER,
-        explicit BOOLEAN,
-        lyrics TEXT
-    )
-    """)
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS audio_features (
-        feature_id SERIAL PRIMARY KEY,
-        song_id INTEGER REFERENCES songs(song_id) UNIQUE,
-        danceability FLOAT,
-        energy FLOAT,
-        key_value INTEGER,
-        loudness FLOAT,
-        mode INTEGER,
-        speechiness FLOAT,
-        acousticness FLOAT,
-        instrumentalness FLOAT,
-        liveness FLOAT,
-        valence FLOAT,
-        tempo FLOAT,
-        time_signature INTEGER
-    )
-    """)
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS artist_genres (
-        artist_id INTEGER REFERENCES artists(artist_id),
-        genre_id INTEGER REFERENCES genres(genre_id),
-        PRIMARY KEY (artist_id, genre_id)
-    )
-    """)
+    create_tables(cursor)
     
     # Insert basic genres
     genres = [
@@ -119,6 +59,79 @@ def setup_database():
     cursor.close()
     conn.close()
     print("Database setup complete!")
+
+def create_tables(cursor):
+    """Create database tables"""
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS genres (
+        genre_id SERIAL PRIMARY KEY,
+        name VARCHAR(50) UNIQUE NOT NULL,
+        description TEXT,
+        typical_bpm_range VARCHAR(50)
+    )
+    """)
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS artists (
+        artist_id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        spotify_id VARCHAR(50) UNIQUE,
+        popularity INTEGER,
+        followers INTEGER,
+        image_url TEXT
+    )
+    """)
+    
+    # Create songs table with additional fields
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS songs (
+        song_id SERIAL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        artist_id INTEGER REFERENCES artists(artist_id),
+        primary_genre_id INTEGER REFERENCES genres(genre_id),
+        spotify_id VARCHAR(50) UNIQUE,
+        album_id VARCHAR(50),
+        album_name VARCHAR(255),
+        release_date DATE,
+        duration_ms INTEGER,
+        popularity INTEGER,
+        explicit BOOLEAN,
+        preview_url TEXT,
+        external_url TEXT,
+        lyrics TEXT,
+        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    
+    # Create audio_features table with normalized fields
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS audio_features (
+        feature_id SERIAL PRIMARY KEY,
+        song_id INTEGER REFERENCES songs(song_id) UNIQUE,
+        danceability FLOAT,
+        energy FLOAT,
+        key_value INTEGER,
+        loudness FLOAT,
+        mode INTEGER,
+        speechiness FLOAT,
+        acousticness FLOAT,
+        instrumentalness FLOAT,
+        liveness FLOAT,
+        valence FLOAT,
+        tempo FLOAT,
+        time_signature INTEGER,
+        analysis_url TEXT
+    )
+    """)
+    
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS artist_genres (
+        artist_id INTEGER REFERENCES artists(artist_id),
+        genre_id INTEGER REFERENCES genres(genre_id),
+        PRIMARY KEY (artist_id, genre_id)
+    )
+    """)
 
 if __name__ == "__main__":
     setup_database()

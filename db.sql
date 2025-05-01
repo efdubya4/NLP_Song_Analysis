@@ -1,7 +1,7 @@
 -- Active: 1746051802775@@127.0.0.1@5432
 -- Create the database
-CREATE DATABASE IF NOT EXISTS viral_verse;
-USE viral_verse;
+CREATE DATABASE IF NOT EXISTS hit_scan;
+USE hit_scan;
 
 -- Create genres table
 CREATE TABLE genres (

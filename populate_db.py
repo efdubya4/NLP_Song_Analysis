@@ -1,19 +1,31 @@
 import os
+import sys
 import psycopg2
 import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
 import lyricsgenius
 from dotenv import load_dotenv
 import time
 import random
 from tqdm import tqdm
+import logging
+from spotify_auth import get_spotify_client
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('song_import.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
-# Connect to database
 def connect_to_db():
-    """Connect to PostgreSQL database"""
+    """Connect to PostgreSQL database with autocommit disabled"""
     try:
         conn = psycopg2.connect(
             host=os.getenv('DB_HOST', 'localhost'),
@@ -21,81 +33,154 @@ def connect_to_db():
             password=os.getenv('DB_PASSWORD'),
             database=os.getenv('DB_NAME', 'hit_scan')
         )
+        conn.autocommit = False  # Ensure transactions are manual
         return conn, conn.cursor()
     except psycopg2.Error as e:
-        print(f"Error connecting to database: {e}")
+        logger.error(f"Database connection error: {e}")
         sys.exit(1)
 
-# Initialize APIs
-spotify = spotipy.Spotify(
-    client_credentials_manager=SpotifyClientCredentials(
-        client_id=os.getenv('SPOTIFY_CLIENT_ID'),
-        client_secret=os.getenv('SPOTIFY_CLIENT_SECRET')
-    )
-)
-
-genius = lyricsgenius.Genius(os.getenv('GENIUS_ACCESS_TOKEN'))
-genius.verbose = False  # Turn off status messages
-genius.remove_section_headers = True  # Remove section headers from lyrics
-
-def get_playlist_tracks(playlist_ids):
-    """Get tracks from playlists"""
+def get_playlist_tracks(spotify, playlist_ids, limit=100):
+    """Get tracks from playlists with better error handling"""
     all_tracks = []
+    
     for playlist_id in playlist_ids:
+        if not playlist_id.strip():
+            continue
+            
         try:
+            # Verify playlist exists and is accessible
+            playlist = spotify.playlist(
+                playlist_id.strip(),
+                fields='name,tracks.total',
+                market='US'
+            )
+            logger.info(f"Found playlist: {playlist['name']}")
+            
             offset = 0
             while True:
                 try:
-                    response = spotify.playlist_items(
-                        playlist_id,
+                    results = spotify.playlist_items(
+                        playlist_id.strip(),
                         offset=offset,
-                        fields='items.track.id,items.track.name,items.track.artists,total',
-                        limit=100
+                        fields='items(track(id,name,artists)),total',
+                        market='US'
                     )
                     
-                    if not response or not response['items']:
+                    if not results['items']:
                         break
                         
-                    for item in response['items']:
-                        if item.get('track') and item['track'].get('id'):
-                            all_tracks.append(item['track'])
+                    tracks = [item['track'] for item in results['items'] 
+                            if item['track'] and not item['track'].get('is_local')]
+                    all_tracks.extend(tracks)
+                    logger.info(f"Retrieved {len(tracks)} tracks from {playlist['name']}")
                     
-                    offset += len(response['items'])
-                    if offset >= response.get('total', 0):
+                    if len(all_tracks) >= limit:
+                        return all_tracks[:limit]
+                        
+                    offset += len(results['items'])
+                    if offset >= results['total']:
                         break
                         
-                    time.sleep(0.5)  # Respect API rate limits
+                    time.sleep(1)  # Rate limiting
                     
                 except spotipy.exceptions.SpotifyException as e:
-                    print(f"Error accessing playlist {playlist_id}: {str(e)}")
-                    break
-                    
+                    if e.http_status == 401:
+                        # Refresh token and retry
+                        spotify.auth_manager.refresh_access_token()
+                        continue
+                    else:
+                        logger.error(f"Error accessing playlist {playlist_id}: {e}")
+                        break
+                        
         except Exception as e:
-            print(f"Error processing playlist {playlist_id}: {str(e)}")
+            logger.error(f"Failed to process playlist {playlist_id}: {e}")
             continue
     
-    return all_tracks
+    return all_tracks[:limit]
 
-def get_track_details(track_id):
+def get_track_details(spotify, track_id):
     """Get detailed track information including audio features"""
-    track = spotify.track(track_id)
-    audio_features = spotify.audio_features(track_id)[0]
-    return track, audio_features
-
-def get_artist_details(artist_id):
-    """Get detailed artist information"""
-    return spotify.artist(artist_id)
-
-def get_lyrics(song_title, artist_name):
-    """Get lyrics from Genius"""
     try:
-        song = genius.search_song(song_title, artist_name)
-        if song:
-            return song.lyrics
+        # Get basic track info
+        track = spotify.track(track_id, market='US')
+        
+        # Get audio features
+        features = spotify.audio_features([track_id])[0] if spotify.audio_features([track_id]) else None
+        
+        # Get artist details
+        main_artist = track['artists'][0]
+        artist = spotify.artist(main_artist['id'])
+        
+        # Get album details
+        album = spotify.album(track['album']['id']) if track['album']['id'] else None
+        
+        return {
+            'track': {
+                'id': track['id'],
+                'name': track['name'],
+                'duration_ms': track['duration_ms'],
+                'explicit': track['explicit'],
+                'popularity': track['popularity'],
+                'preview_url': track['preview_url'],
+                'external_urls': track['external_urls'],
+                'uri': track['uri']
+            },
+            'artist': {
+                'id': artist['id'],
+                'name': artist['name'],
+                'genres': artist['genres'],
+                'popularity': artist['popularity'],
+                'followers': artist['followers']['total'],
+                'images': artist['images']
+            },
+            'album': {
+                'id': album['id'] if album else None,
+                'name': album['name'] if album else track['album']['name'],
+                'release_date': album['release_date'] if album else track['album']['release_date'],
+                'total_tracks': album['total_tracks'] if album else track['album']['total_tracks'],
+                'images': album['images'] if album else track['album']['images']
+            },
+            'audio_features': features
+        }
+        
+    except spotipy.exceptions.SpotifyException as e:
+        if e.http_status == 401:
+            spotify.auth_manager.refresh_access_token()
+            return get_track_details(spotify, track_id)  # Retry with fresh token
+        logger.error(f"Error getting track details: {e}")
+        return None
     except Exception as e:
-        print(f"Error getting lyrics for {song_title}: {e}")
-    
-    return None
+        logger.error(f"Unexpected error getting track details: {e}")
+        return None
+
+def get_lyrics(genius, song_title, artist_name):
+    """Get lyrics from Genius with improved error handling"""
+    try:
+        # Retry up to 3 times with delays
+        for attempt in range(3):
+            try:
+                song = genius.search_song(song_title, artist_name)
+                if song:
+                    return song.lyrics
+                
+                # If no results, try with just the main artist (in case of featured artists)
+                if "feat." in artist_name or "&" in artist_name:
+                    main_artist = artist_name.split("feat.")[0].split("&")[0].strip()
+                    song = genius.search_song(song_title, main_artist)
+                    if song:
+                        return song.lyrics
+                
+                return None
+                
+            except Exception as e:
+                if attempt == 2:  # Last attempt
+                    logger.error(f"Failed to get lyrics after 3 attempts for {song_title}: {e}")
+                    return None
+                time.sleep(2)  # Wait before retrying
+                
+    except Exception as e:
+        logger.error(f"Unexpected error getting lyrics for {song_title}: {e}")
+        return None
 
 def insert_genre(cursor, name, description, bpm_range):
     """Insert a genre and return its ID"""
@@ -140,33 +225,53 @@ def insert_artist_genre(cursor, artist_id, genre_id):
 def insert_song(cursor, song_data):
     """Insert a song and return its ID"""
     # Check if song already exists
-    query = "SELECT song_id FROM songs WHERE spotify_id = %s"
+    query = """
+    SELECT song_id FROM songs 
+    WHERE spotify_id = %s
+    """
     cursor.execute(query, (song_data['spotify_id'],))
     result = cursor.fetchone()
     
     if result:
         return result[0]
     
-    # Insert new song
+    # Insert new song with additional fields
     query = """
     INSERT INTO songs (
-        title, artist_id, primary_genre_id, spotify_id, 
-        release_date, duration_ms, popularity, explicit, lyrics
+        title, 
+        artist_id, 
+        primary_genre_id, 
+        spotify_id,
+        album_id,
+        album_name, 
+        release_date, 
+        duration_ms, 
+        popularity, 
+        explicit,
+        preview_url,
+        external_url,
+        lyrics
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     RETURNING song_id
     """
+    
     cursor.execute(query, (
         song_data['title'],
         song_data['artist_id'],
         song_data['genre_id'],
         song_data['spotify_id'],
+        song_data['album_id'],
+        song_data['album_name'],
         song_data['release_date'],
         song_data['duration_ms'],
         song_data['popularity'],
         song_data['explicit'],
+        song_data['preview_url'],
+        song_data['external_url'],
         song_data['lyrics']
     ))
+    
     return cursor.fetchone()[0]
 
 def insert_audio_features(cursor, song_id, features):
@@ -208,106 +313,166 @@ def insert_audio_features(cursor, song_id, features):
         features['time_signature']
     ))
 
+def get_audio_features(spotify, track_ids):
+    """Get audio features with batch processing and retries"""
+    if not track_ids:
+        return []
+    
+    features = []
+    batch_size = 50  # Spotify API limit
+    
+    for i in range(0, len(track_ids), batch_size):
+        batch = track_ids[i:i+batch_size]
+        retries = 3
+        
+        while retries > 0:
+            try:
+                response = spotify.audio_features(batch)
+                if response:
+                    features.extend([f for f in response if f])
+                break
+            except spotipy.exceptions.SpotifyException as e:
+                if e.http_status == 401:
+                    spotify.auth_manager.refresh_access_token()
+                    retries -= 1
+                    continue
+                elif e.http_status == 429:  # Rate limited
+                    retry_after = int(e.headers.get('Retry-After', 1))
+                    time.sleep(retry_after)
+                    continue
+                else:
+                    logger.error(f"Error getting audio features: {e}")
+                    break
+            except Exception as e:
+                logger.error(f"Unexpected error getting audio features: {e}")
+                break
+                
+        time.sleep(0.5)  # Rate limiting between batches
+    
+    return features
+
+def get_playlists_from_env():
+    """Get playlist IDs from environment variables"""
+    return {
+        'Pop': os.getenv('POP_PLAYLISTS', '').split(','),
+        'Hip Hop': os.getenv('HIP_HOP_PLAYLISTS', '').split(','),
+        'Rock': os.getenv('ROCK_PLAYLISTS', '').split(','),
+        'Electronic': os.getenv('ELECTRONIC_PLAYLISTS', '').split(','),
+        'R&B': os.getenv('RNB_PLAYLISTS', '').split(',')
+    }
+
+def process_track(conn, cursor, track, genre_id, spotify, genius):
+    """Process a single track with improved error handling"""
+    try:
+        # Get comprehensive track details
+        track_details = get_track_details(spotify, track['id'])
+        
+        if not track_details:
+            raise Exception(f"Could not get details for track {track['id']}")
+            
+        # Start transaction
+        cursor.execute("BEGIN")
+        
+        try:
+            # Insert artist
+            artist_data = {
+                'name': track_details['artist']['name'],
+                'spotify_id': track_details['artist']['id'],
+                'popularity': track_details['artist']['popularity'],
+                'followers': track_details['artist']['followers'],
+                'image_url': track_details['artist']['images'][0]['url'] if track_details['artist']['images'] else None
+            }
+            
+            db_artist_id = insert_artist(cursor, artist_data)
+            
+            # Get lyrics
+            lyrics = get_lyrics(genius, track_details['track']['name'], track_details['artist']['name'])
+            
+            # Insert song
+            song_data = {
+                'title': track_details['track']['name'],
+                'artist_id': db_artist_id,
+                'genre_id': genre_id,
+                'spotify_id': track_details['track']['id'],
+                'album_id': track_details['album']['id'],
+                'album_name': track_details['album']['name'],
+                'release_date': track_details['album']['release_date'],
+                'duration_ms': track_details['track']['duration_ms'],
+                'popularity': track_details['track']['popularity'],
+                'explicit': track_details['track']['explicit'],
+                'preview_url': track_details['track']['preview_url'],
+                'external_url': track_details['track']['external_urls'].get('spotify'),
+                'lyrics': lyrics
+            }
+            
+            song_id = insert_song(cursor, song_data)
+            
+            # Insert audio features if available
+            if track_details['audio_features']:
+                insert_audio_features(cursor, song_id, track_details['audio_features'])
+            
+            conn.commit()
+            logger.info(f"Successfully added: {track_details['track']['name']} by {track_details['artist']['name']}")
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            raise e
+            
+    except Exception as e:
+        logger.error(f"Error processing track {track.get('name', 'Unknown')}: {e}")
+        return False
+
 def populate_database():
-    """Main function to populate the database with songs"""
+    """Main database population function"""
     conn, cursor = connect_to_db()
     
-    # Get genre IDs
-    cursor.execute("SELECT genre_id, name FROM genres")
-    genres = {name: id for id, name in cursor.fetchall()}
-    
-    # Genre-specific playlists
-    genre_playlists = {
-        'Pop': [
-            '37i9dQZF1DXcRXFNfZr7Tp',  # Top 50 Global
-            '37i9dQZF1DX18jTM2l2fJY'   # Pop Rising
-        ],
-        'Hip Hop': [
-            '37i9dQZF1DX0XUsuxWHRQd',  # RapCaviar
-            '37i9dQZF1DX0hvSv9Rf41p'   # Hip Hop Controller
-        ],
-        'Rock': [
-            '37i9dQZF1DX1rVvRgjX59F',  # Rock This
-            '37i9dQZF1DWXRqgorJj26U'   # Rock Classics
-        ],
-        'Electronic': [
-            '37i9dQZF1DX4dyzvuaRJ0n',  # mint
-            '37i9dQZF1DX0AZ1yC6h4Wi'   # Electronic Rising
-        ],
-        'R&B': [
-            '37i9dQZF1DX4SBhb3fqCJd',  # Are & Be
-            '37i9dQZF1DX2WkIBRaPhN3'   # R&B Right Now
-        ]
-    }
-    
-    # Process each genre
-    for genre_name, playlist_ids in genre_playlists.items():
-        print(f"Processing {genre_name} playlists...")
-        genre_id = genres[genre_name]
+    try:
+        # Initialize Spotify client with auto token refresh
+        spotify = get_spotify_client()
         
-        # Get tracks from playlists
-        tracks = get_playlist_tracks(playlist_ids)
-        random.shuffle(tracks)
+        # Test connection and token
+        try:
+            spotify.current_user()
+        except:
+            # Force token refresh
+            spotify.auth_manager.refresh_access_token()
+            
+        # Initialize Genius API
+        genius = lyricsgenius.Genius(os.getenv('GENIUS_ACCESS_TOKEN'))
+        genius.verbose = False
+        genius.remove_section_headers = True
         
-        # Limit to 100 songs per genre
-        tracks = tracks[:100]
+        # Get genre IDs
+        cursor.execute("SELECT genre_id, name FROM genres")
+        genres = {name: id for id, name in cursor.fetchall()}
         
-        # Process each track
-        for track in tqdm(tracks, desc=f"Adding {genre_name} songs"):
-            try:
-                # Get track details
-                track_detail, audio_features = get_track_details(track['id'])
-                
-                # Get main artist details
-                artist_id = track['artists'][0]['id']
-                artist_detail = get_artist_details(artist_id)
-                
-                # Get lyrics (with rate limiting)
-                lyrics = get_lyrics(track['name'], artist_detail['name'])
-                time.sleep(1)  # Genius API rate limiting
-                
-                # Insert artist
-                artist_data = {
-                    'name': artist_detail['name'],
-                    'spotify_id': artist_detail['id'],
-                    'popularity': artist_detail['popularity'],
-                    'followers': artist_detail['followers']['total'],
-                    'image_url': artist_detail['images'][0]['url'] if artist_detail['images'] else None
-                }
-                db_artist_id = insert_artist(cursor, artist_data)
-                
-                # Link artist to genre
-                insert_artist_genre(cursor, db_artist_id, genre_id)
-                
-                # Insert song
-                song_data = {
-                    'title': track_detail['name'],
-                    'artist_id': db_artist_id,
-                    'genre_id': genre_id,
-                    'spotify_id': track_detail['id'],
-                    'release_date': track_detail['album']['release_date'],
-                    'duration_ms': track_detail['duration_ms'],
-                    'popularity': track_detail['popularity'],
-                    'explicit': track_detail['explicit'],
-                    'lyrics': lyrics
-                }
-                
-                # Insert song and get song_id
-                song_id = insert_song(cursor, song_data)
-                
-                # Insert audio features
-                insert_audio_features(cursor, song_id, audio_features)
-                
-                # Commit the transaction
-                conn.commit()
-                
-            except Exception as e:
-                print(f"Error processing track {track['name']}: {str(e)}")
-                conn.rollback()
+        # Get playlists from environment
+        genre_playlists = get_playlists_from_env()
+        
+        # Process each genre
+        for genre_name, playlist_ids in genre_playlists.items():
+            if not playlist_ids[0]:
+                logger.info(f"No playlists defined for {genre_name}, skipping...")
                 continue
-    
-    conn.close()
-    print("Database population complete!")
+                
+            logger.info(f"Processing {genre_name} playlists...")
+            genre_id = genres[genre_name]
+            
+            # Get and process tracks
+            tracks = get_playlist_tracks(spotify, playlist_ids)
+            random.shuffle(tracks)
+            
+            with tqdm(tracks, desc=f"Adding {genre_name} songs") as pbar:
+                for track in pbar:
+                    success = process_track(conn, cursor, track, genre_id, spotify, genius)
+                    pbar.set_postfix({'success': success})
+                    time.sleep(0.5)  # General rate limiting
+                    
+    finally:
+        cursor.close()
+        conn.close()
+        logger.info("Database population complete!")
 
 if __name__ == "__main__":
     populate_database()
