@@ -13,13 +13,18 @@ load_dotenv()
 
 # Connect to database
 def connect_to_db():
-    conn = psycopg2.connect(
-        host=os.getenv('DB_HOST', 'localhost'),
-        user=os.getenv('DB_USER', 'postgres'),
-        password=os.getenv('DB_PASSWORD', ''),
-        database=os.getenv('DB_NAME', 'hits_scan')
-    )
-    return conn, conn.cursor()
+    """Connect to PostgreSQL database"""
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv('DB_HOST', 'localhost'),
+            user=os.getenv('DB_USER', 'hitscanadmin'),
+            password=os.getenv('DB_PASSWORD'),
+            database=os.getenv('DB_NAME', 'hit_scan')
+        )
+        return conn, conn.cursor()
+    except psycopg2.Error as e:
+        print(f"Error connecting to database: {e}")
+        sys.exit(1)
 
 # Initialize APIs
 spotify = spotipy.Spotify(
@@ -37,28 +42,37 @@ def get_playlist_tracks(playlist_ids):
     """Get tracks from playlists"""
     all_tracks = []
     for playlist_id in playlist_ids:
-        offset = 0
-        while True:
-            response = spotify.playlist_items(
-                playlist_id,
-                offset=offset,
-                fields='items.track.id,items.track.name,items.track.artists,total',
-                limit=100
-            )
-            
-            if len(response['items']) == 0:
-                break
-                
-            for item in response['items']:
-                if item['track'] and item['track']['id']:
-                    all_tracks.append(item['track'])
-            
-            offset += len(response['items'])
-            if offset >= response['total']:
-                break
-                
-            # Respect API rate limits
-            time.sleep(0.5)
+        try:
+            offset = 0
+            while True:
+                try:
+                    response = spotify.playlist_items(
+                        playlist_id,
+                        offset=offset,
+                        fields='items.track.id,items.track.name,items.track.artists,total',
+                        limit=100
+                    )
+                    
+                    if not response or not response['items']:
+                        break
+                        
+                    for item in response['items']:
+                        if item.get('track') and item['track'].get('id'):
+                            all_tracks.append(item['track'])
+                    
+                    offset += len(response['items'])
+                    if offset >= response.get('total', 0):
+                        break
+                        
+                    time.sleep(0.5)  # Respect API rate limits
+                    
+                except spotipy.exceptions.SpotifyException as e:
+                    print(f"Error accessing playlist {playlist_id}: {str(e)}")
+                    break
+                    
+        except Exception as e:
+            print(f"Error processing playlist {playlist_id}: {str(e)}")
+            continue
     
     return all_tracks
 
@@ -205,24 +219,24 @@ def populate_database():
     # Genre-specific playlists
     genre_playlists = {
         'Pop': [
-            '37i9dQZF1DXcBWIGoYBM5M',  # Today's Top Hits
-            '37i9dQZF1DX1ngEVM0lKrb'   # Nobody's Listening
+            '37i9dQZF1DXcRXFNfZr7Tp',  # Top 50 Global
+            '37i9dQZF1DX18jTM2l2fJY'   # Pop Rising
         ],
         'Hip Hop': [
             '37i9dQZF1DX0XUsuxWHRQd',  # RapCaviar
-            '37i9dQZF1DX2RxBh64BHjQ'   # Most Necessary
+            '37i9dQZF1DX0hvSv9Rf41p'   # Hip Hop Controller
         ],
         'Rock': [
-            '37i9dQZF1DWXRqgorJj26U',  # Rock Classics
-            '37i9dQZF1DX1rVvRgjX59F'   # Rock This
+            '37i9dQZF1DX1rVvRgjX59F',  # Rock This
+            '37i9dQZF1DWXRqgorJj26U'   # Rock Classics
         ],
         'Electronic': [
             '37i9dQZF1DX4dyzvuaRJ0n',  # mint
-            '37i9dQZF1DX6J5NfMJS675'   # Dance Party
+            '37i9dQZF1DX0AZ1yC6h4Wi'   # Electronic Rising
         ],
         'R&B': [
             '37i9dQZF1DX4SBhb3fqCJd',  # Are & Be
-            '37i9dQZF1DX9XIFQuFvzM4'   # Soul Coffee
+            '37i9dQZF1DX2WkIBRaPhN3'   # R&B Right Now
         ]
     }
     
@@ -272,6 +286,26 @@ def populate_database():
                     'genre_id': genre_id,
                     'spotify_id': track_detail['id'],
                     'release_date': track_detail['album']['release_date'],
+                    'duration_ms': track_detail['duration_ms'],
+                    'popularity': track_detail['popularity'],
+                    'explicit': track_detail['explicit'],
+                    'lyrics': lyrics
+                }
+                
+                # Insert song and get song_id
+                song_id = insert_song(cursor, song_data)
+                
+                # Insert audio features
+                insert_audio_features(cursor, song_id, audio_features)
+                
+                # Commit the transaction
+                conn.commit()
+                
+            except Exception as e:
+                print(f"Error processing track {track['name']}: {str(e)}")
+                conn.rollback()
+                continue
+    
     conn.close()
     print("Database population complete!")
 
