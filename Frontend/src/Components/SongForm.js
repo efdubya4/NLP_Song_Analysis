@@ -39,44 +39,45 @@ import MoodIcon from '@mui/icons-material/Mood';
 import ThumbUpIcon from '@mui/icons-material/ThumbUp';
 import ThumbDownIcon from '@mui/icons-material/ThumbDown';
 import SupportAgentIcon from '@mui/icons-material/SupportAgent';
+import api from '../Services/api';
 
 // Mock function to simulate prediction (since we're ignoring backend)
-const mockPredictHit = (formData) => {
-  // Simulate API delay
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      // Create prediction based on form values
-      const danceabilityFactor = formData.danceability * 0.3;
-      const energyFactor = formData.energy * 0.25;
-      const valenceFactor = formData.valence * 0.2;
-      const tempoFactor = (formData.tempo - 50) / 150 * 0.15; // Normalize tempo to 0-1
+// const mockPredictHit = (formData) => {
+//   // Simulate API delay
+//   return new Promise((resolve) => {
+//     setTimeout(() => {
+//       // Create prediction based on form values
+//       const danceabilityFactor = formData.danceability * 0.3;
+//       const energyFactor = formData.energy * 0.25;
+//       const valenceFactor = formData.valence * 0.2;
+//       const tempoFactor = (formData.tempo - 50) / 150 * 0.15; // Normalize tempo to 0-1
       
-      // Generate random factor for lyrics (would be analyzed by backend)
-      const lyricsFactor = formData.lyrics.length > 50 ? Math.random() * 0.2 : 0.05;
+//       // Generate random factor for lyrics (would be analyzed by backend)
+//       const lyricsFactor = formData.lyrics.length > 50 ? Math.random() * 0.2 : 0.05;
       
-      // Calculate probability (make it look realistic)
-      let probability = danceabilityFactor + energyFactor + valenceFactor + tempoFactor + lyricsFactor;
+//       // Calculate probability (make it look realistic)
+//       let probability = danceabilityFactor + energyFactor + valenceFactor + tempoFactor + lyricsFactor;
       
-      // Add a random factor to make it more realistic
-      probability = Math.min(0.95, Math.max(0.05, probability + (Math.random() * 0.2 - 0.1)));
+//       // Add a random factor to make it more realistic
+//       probability = Math.min(0.95, Math.max(0.05, probability + (Math.random() * 0.2 - 0.1)));
       
-      // Create mock confidence based on lyrics length
-      const confidence = Math.min(0.9, 0.5 + (formData.lyrics.length / 1000));
+//       // Create mock confidence based on lyrics length
+//       const confidence = Math.min(0.9, 0.5 + (formData.lyrics.length / 1000));
       
-      resolve({
-        probability_top_chart: probability,
-        confidence: confidence,
-        analysis: {
-          danceability_impact: danceabilityFactor / probability * 100,
-          energy_impact: energyFactor / probability * 100,
-          valence_impact: valenceFactor / probability * 100,
-          tempo_impact: tempoFactor / probability * 100,
-          lyrics_impact: lyricsFactor / probability * 100
-        }
-      });
-    }, 1500); // Simulate 1.5s delay
-  });
-};
+//       resolve({
+//         probability_top_chart: probability,
+//         confidence: confidence,
+//         analysis: {
+//           danceability_impact: danceabilityFactor / probability * 100,
+//           energy_impact: energyFactor / probability * 100,
+//           valence_impact: valenceFactor / probability * 100,
+//           tempo_impact: tempoFactor / probability * 100,
+//           lyrics_impact: lyricsFactor / probability * 100
+//         }
+//       });
+//     }, 1500); // Simulate 1.5s delay
+//   });
+// };
 
 // Feature info tooltips
 const featureInfos = {
@@ -127,12 +128,35 @@ export default function SongForm() {
     setAnalysisStarted(true);
     
     try {
-      // Use mock prediction function (would be API call to backend)
-      const prediction = await mockPredictHit(formData);
+      console.log('Submitting:', formData); // Debug what's being sent
+      const prediction = await api.analyzeSong(formData);
+      console.log('Received:', prediction); // Debug the response
       setResults(prediction);
     } catch (error) {
-      console.error("Error predicting hit:", error);
-      // In a real app, would handle error state here
+      console.error("API Error Details:", {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      
+      // Fallback to mock data if in development
+      if (process.env.NODE_ENV === 'development') {
+        console.warn("Using mock data due to API failure");
+        const mockResults = {
+          probability_top_chart: 0.65,
+          confidence: 0.8,
+          analysis: {
+            danceability_impact: 25,
+            energy_impact: 30,
+            valence_impact: 20,
+            tempo_impact: 15,
+            lyrics_impact: 10
+          }
+        };
+        setResults(mockResults);
+      } else {
+        alert("Analysis service unavailable. Please try again later.");
+      }
     } finally {
       setLoading(false);
     }
@@ -153,9 +177,9 @@ export default function SongForm() {
 
   // Get score color based on percentage
   const getScoreColor = (value) => {
-    if (value >= 70) return 'success.main';
-    if (value >= 40) return 'warning.main';
-    return 'error.main';
+    if (value >= 70) return theme.palette.success.main;
+    if (value >= 40) return theme.palette.warning.main;
+    return theme.palette.error.main;
   };
 
   // Music trends cards
@@ -1110,44 +1134,29 @@ export default function SongForm() {
                 </Grid>
                 
                 <Box
-   sx={{
-     mt: 3,
-     p: 3,
-     borderRadius: 2,
-    bgcolor: results.probability_top_chart * 100 >= 70 ? 
-      alpha('success.main', 0.1) : 
-      results.probability_top_chart * 100 >= 40 ? 
-      alpha('warning.main', 0.1) : 
-      alpha('error.main', 0.1),
-    bgcolor:
-      results.probability_top_chart * 100 >= 70
-        ? alpha(theme.palette.success.main, 0.1)
-        : results.probability_top_chart * 100 >= 40
-        ? alpha(theme.palette.warning.main, 0.1)
-        : alpha(theme.palette.error.main, 0.1),
-     border: '1px solid',
-    borderColor: results.probability_top_chart * 100 >= 70 ? 
-      alpha('success.main', 0.3) : 
-      results.probability_top_chart * 100 >= 40 ? 
-      alpha('warning.main', 0.3) : 
-      alpha('error.main', 0.3),
-    borderColor:
-      results.probability_top_chart * 100 >= 70
-        ? alpha(theme.palette.success.main, 0.3)
-        : results.probability_top_chart * 100 >= 40
-        ? alpha(theme.palette.warning.main, 0.3)
-        : alpha(theme.palette.error.main, 0.3),
-   }}
+  sx={{
+    mt: 3,
+    p: 3,
+    borderRadius: 2,
+    bgcolor: results.probability_top_chart * 100 >= 70
+      ? alpha(theme.palette.success.main, 0.1)
+      : results.probability_top_chart * 100 >= 40
+      ? alpha(theme.palette.warning.main, 0.1)
+      : alpha(theme.palette.error.main, 0.1),
+    border: '1px solid',
+    borderColor: results.probability_top_chart * 100 >= 70
+      ? alpha(theme.palette.success.main, 0.3)
+      : results.probability_top_chart * 100 >= 40
+      ? alpha(theme.palette.warning.main, 0.3)
+      : alpha(theme.palette.error.main, 0.3),
+  }}
  >
                   <Typography 
                     variant="subtitle1" 
                     fontWeight={600} 
-                    color={results.probability_top_chart * 100 >= 70 ? 
-                      'success.main' : 
-                      results.probability_top_chart * 100 >= 40 ? 
-                      'warning.main' : 
-                      'error.main'
-                    }
+                    color={results.probability_top_chart * 100 >= 70 ? theme.palette.success.main : 
+                      results.probability_top_chart * 100 >= 40 ? theme.palette.warning.main : 
+                      theme.palette.error.main}
                     sx={{ mb: 1 }}
                   >
                     {results.probability_top_chart * 100 >= 70 ? 
